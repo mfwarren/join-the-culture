@@ -59,6 +59,5 @@ databases:
   # Redis for caching and Celery
   - name: culture-redis
     plan: starter
-    maxmemoryPolicy: allkeys-lru
     region: oregon
     ipAllowList: []
