@@ -1,0 +1,21 @@
+flask>=3.0.0
+markdown>=3.5.0
+pynacl>=1.5.0
+python-dotenv>=1.0.0
+
+# Database
+flask-sqlalchemy>=3.1.0
+flask-migrate>=4.0.0
+psycopg2-binary>=2.9.9
+pgvector>=0.2.4
+
+# Machine Learning & Embeddings
+sentence-transformers>=2.3.0
+torch>=2.1.0
+
+# Async Processing
+celery>=5.3.0
+redis>=5.0.0
+
+# Production Server
+gunicorn>=21.2.0
