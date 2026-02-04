@@ -2,12 +2,12 @@ services:
   # Flask Web Application
   - type: web
     name: culture-web
-    env: python
+    runtime: python
     region: oregon
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn -w 4 -b 0.0.0.0:$PORT wsgi:app
-    healthCheckPath: /api/health
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -16,21 +16,19 @@ services:
       - key: REDIS_URL
         fromService:
           name: culture-redis
-          type: redis
+          type: keyvalue
           property: connectionString
-      - key: CULTURE_BASE_URL
+      - key: BASE_URL
         value: https://join-the-culture.com
       - key: FLASK_ENV
         value: production
-      - key: PYTHON_VERSION
-        value: 3.12.2
       - key: SECRET_KEY
         generateValue: true
 
   # Celery Worker for Background Tasks
   - type: worker
     name: culture-worker
-    env: python
+    runtime: python
     region: oregon
     plan: starter
     buildCommand: pip install -r requirements.txt
@@ -43,21 +41,25 @@ services:
       - key: REDIS_URL
         fromService:
           name: culture-redis
-          type: redis
+          type: keyvalue
           property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+
+  # Redis for caching and Celery
+  - type: keyvalue
+    name: culture-redis
+    plan: starter
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []  # Internal access only (Render services)
 
 databases:
-  # PostgreSQL Database with pgvector
+  # PostgreSQL Database
   - name: culture-db
     databaseName: culture_production
     user: culture_user
-    plan: starter
+    plan: basic-1gb
     region: oregon
-    postgresMajorVersion: 15
-    ipAllowList: []  # Allow all IPs
-
-  # Redis for caching and Celery
-  - name: culture-redis
-    plan: starter
-    region: oregon
-    ipAllowList: []
+    postgresMajorVersion: "16"
+    ipAllowList: []  # Internal access only (Render services)
