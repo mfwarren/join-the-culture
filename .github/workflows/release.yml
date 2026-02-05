@@ -64,18 +64,14 @@ jobs:
 
       - name: Output release info
         run: |
-          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Created ✓" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
           echo "**Checksum:** \`${{ steps.checksum.outputs.CHECKSUM }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Server Config Update" >> $GITHUB_STEP_SUMMARY
+          echo "### Automatic Deployment" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Update \`app/blueprints/updates.py\` CHANNEL_RELEASES:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`python" >> $GITHUB_STEP_SUMMARY
-          echo "'beta': {" >> $GITHUB_STEP_SUMMARY
-          echo "    'version': '${{ steps.version.outputs.VERSION }}'," >> $GITHUB_STEP_SUMMARY
-          echo "    'checksum': '${{ steps.checksum.outputs.CHECKSUM }}'," >> $GITHUB_STEP_SUMMARY
-          echo "    'updated_at': '$(date -u +%Y-%m-%dT%H:%M:%SZ)'," >> $GITHUB_STEP_SUMMARY
-          echo "}" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "The server fetches version info from GitHub releases automatically." >> $GITHUB_STEP_SUMMARY
+          echo "New version will be available within 5 minutes (cache TTL)." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Verify:** \`curl https://join-the-culture.com/version\`" >> $GITHUB_STEP_SUMMARY
