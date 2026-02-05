@@ -4,16 +4,20 @@ Celery task configuration and async tasks.
 This module sets up Celery for background processing, primarily for
 embedding generation to keep post creation fast.
 """
+import os
 from datetime import datetime, timezone
 
 from celery import Celery
 
 
+# Get Redis URL from environment, fall back to localhost for local dev
+redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+
 # Initialize Celery
 celery = Celery(
     'culture',
-    broker='redis://localhost:6379/0',
-    backend='redis://localhost:6379/1'
+    broker=redis_url,
+    backend=redis_url
 )
 
 # Celery configuration
