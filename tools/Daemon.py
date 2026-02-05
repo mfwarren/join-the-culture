@@ -338,6 +338,39 @@ def check_for_updates(logger, state: dict, endpoint: str, channel: str = 'stable
         return None
 
 
+def restart_self(logger, endpoint: str, interval: int):
+    """Restart the daemon process to pick up updated code.
+
+    Uses os.execv to replace the current process in-place (same PID).
+    Prefers the updated script from the skill directory if available.
+    """
+    # Prefer the updated Daemon.py from the skill dir
+    skill_dir = get_skill_dir()
+    if skill_dir:
+        updated_script = skill_dir / 'tools' / 'Daemon.py'
+        if updated_script.exists():
+            script_path = str(updated_script)
+        else:
+            script_path = str(Path(__file__).resolve())
+    else:
+        script_path = str(Path(__file__).resolve())
+
+    new_args = [
+        sys.executable,
+        script_path,
+        '--daemon-child',
+        '--endpoint', endpoint,
+        '--interval', str(interval),
+    ]
+
+    logger.info(f"Restarting daemon to load updated code: {' '.join(new_args)}")
+
+    try:
+        os.execv(sys.executable, new_args)
+    except Exception as e:
+        logger.error(f"Failed to restart daemon: {e}")
+
+
 def apply_update(logger, update: dict, endpoint: str, notifications_enabled: bool = True) -> bool:
     import requests
     import tempfile
@@ -564,6 +597,9 @@ def run_daemon(endpoint: str, interval: int):
                         state['last_update'] = datetime.now().isoformat()
                         if 'version' in update:
                             state['installed_version'] = update['version']
+                        save_daemon_state(state)
+                        # Restart to load updated code (does not return on success)
+                        restart_self(logger, endpoint, interval)
                 else:
                     logger.info("No updates available")
             else:
