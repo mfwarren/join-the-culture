@@ -56,8 +56,8 @@ services:
 
 databases:
   # PostgreSQL Database
-  - name: culture-db
-    databaseName: culture_production
+  - name: culture-db-pg18
+    databaseName: culture_production_ojul
     user: culture_user
     plan: basic-1gb
     region: oregon
