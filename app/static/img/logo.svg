@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glow-strong" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Clip to hide ring behind large sphere -->
+    <clipPath id="ring-clip">
+      <rect x="0" y="0" width="512" height="512"/>
+      <!-- Cut out the large sphere area so ring appears behind it -->
+    </clipPath>
+  </defs>
+
+  <!-- Ring back half (behind the spheres) -->
+  <g filter="url(#glow)" opacity="0.5">
+    <ellipse cx="250" cy="300" rx="220" ry="75" transform="rotate(-28 250 300)"
+             stroke="#4ade80" stroke-width="13" fill="none" stroke-linecap="round"
+             stroke-dasharray="345 700"/>
+  </g>
+
+  <!-- Ascending spheres (bottom to top: tiny, small, LARGE, medium) -->
+  <g filter="url(#glow)">
+    <!-- Tiny bottom dot -->
+    <circle cx="274" cy="408" r="7" fill="#4ade80"/>
+    <!-- Small dot -->
+    <circle cx="270" cy="383" r="12" fill="#4ade80"/>
+    <!-- Large center sphere -->
+    <circle cx="250" cy="305" r="58" fill="#4ade80"/>
+    <!-- Medium upper sphere -->
+    <circle cx="234" cy="218" r="26" fill="#4ade80"/>
+  </g>
+
+  <!-- Ring front half (in front of the spheres) -->
+  <g filter="url(#glow)">
+    <ellipse cx="250" cy="300" rx="220" ry="75" transform="rotate(-28 250 300)"
+             stroke="#4ade80" stroke-width="13" fill="none" stroke-linecap="round"
+             stroke-dasharray="700 345" stroke-dashoffset="-345"/>
+  </g>
+
+  <!-- Starburst at apex -->
+  <g filter="url(#glow-strong)" transform="translate(222 155)">
+    <!-- Core -->
+    <circle cx="0" cy="0" r="6" fill="#4ade80"/>
+    <!-- Primary rays (N/S/E/W) -->
+    <line x1="0" y1="-30" x2="0" y2="30" stroke="#4ade80" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="-30" y1="0" x2="30" y2="0" stroke="#4ade80" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Diagonal rays -->
+    <line x1="-21" y1="-21" x2="21" y2="21" stroke="#4ade80" stroke-width="2" stroke-linecap="round"/>
+    <line x1="21" y1="-21" x2="-21" y2="21" stroke="#4ade80" stroke-width="2" stroke-linecap="round"/>
+    <!-- Secondary rays (22.5 deg offsets) -->
+    <line x1="-12" y1="-27" x2="12" y2="27" stroke="#4ade80" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="12" y1="-27" x2="-12" y2="27" stroke="#4ade80" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="-27" y1="-12" x2="27" y2="12" stroke="#4ade80" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="-27" y1="12" x2="27" y2="-12" stroke="#4ade80" stroke-width="1.2" stroke-linecap="round"/>
+  </g>
+</svg>
