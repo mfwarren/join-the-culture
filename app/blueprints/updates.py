@@ -8,25 +8,33 @@ and download URLs for each release channel.
 For local development, serves a dynamically-built zip from /releases/dev.zip.
 
 Supports release channels:
-- stable: Promoted versions that have been tested on beta users
-- beta: Latest features, may have bugs
+- stable: Latest non-prerelease from GitHub
+- beta: Latest release including prereleases
 """
 import os
 import io
+import time
 import zipfile
 import hashlib
+import urllib.request
+import json as json_lib
 from flask import Blueprint, jsonify, current_app, request, Response, send_file
 
 updates_bp = Blueprint('updates', __name__)
 
 # GitHub repository for releases
 # Format: owner/repo
-GITHUB_REPO = os.environ.get('GITHUB_REPO', 'culture-platform/culture')
+GITHUB_REPO = os.environ.get('GITHUB_REPO', 'mfwarren/join-the-culture')
 
-# Channel configuration
-# In production, this could come from a database or config file
-# After a release, update the version/checksum here
-CHANNEL_RELEASES = {
+# Cache for GitHub releases (avoid hitting API on every request)
+_github_cache = {
+    'releases': None,
+    'fetched_at': 0,
+    'cache_ttl': 300,  # 5 minutes
+}
+
+# Fallback if GitHub API fails
+FALLBACK_RELEASES = {
     'stable': {
         'version': '0.1.0',
         'checksum': '79501823fc30ac5bcecd4cab038f7ac91850e800fdbd388e489331a4ff6ac536',
@@ -40,17 +48,120 @@ CHANNEL_RELEASES = {
 }
 
 
+def fetch_github_releases():
+    """Fetch releases from GitHub API with caching."""
+    now = time.time()
+
+    # Return cached if still valid
+    if (_github_cache['releases'] is not None and
+            now - _github_cache['fetched_at'] < _github_cache['cache_ttl']):
+        return _github_cache['releases']
+
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+        req = urllib.request.Request(url, headers={
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Culture-Platform/1.0'
+        })
+
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            releases = json_lib.loads(resp.read().decode('utf-8'))
+
+        if not releases:
+            return None
+
+        # Parse releases into channel format
+        result = {'stable': None, 'beta': None}
+
+        for release in releases:
+            if release.get('draft'):
+                continue
+
+            version = release['tag_name'].lstrip('v')
+            is_prerelease = release.get('prerelease', False)
+
+            # Find the zip asset and checksum
+            zip_asset = None
+            checksum = None
+
+            for asset in release.get('assets', []):
+                name = asset['name']
+                if name.endswith('.zip') and 'culture' in name.lower():
+                    zip_asset = asset
+                elif name.endswith('.sha256'):
+                    # Fetch checksum from sha256 file
+                    try:
+                        checksum_req = urllib.request.Request(
+                            asset['browser_download_url'],
+                            headers={'User-Agent': 'Culture-Platform/1.0'}
+                        )
+                        with urllib.request.urlopen(checksum_req, timeout=5) as cs_resp:
+                            checksum = cs_resp.read().decode('utf-8').split()[0]
+                    except Exception:
+                        pass
+
+            if not zip_asset:
+                continue
+
+            release_info = {
+                'version': version,
+                'checksum': checksum or '',
+                'updated_at': release['published_at'],
+                'download_url': zip_asset['browser_download_url'],
+            }
+
+            # Beta gets the first (latest) release including prereleases
+            if result['beta'] is None:
+                result['beta'] = release_info
+
+            # Stable gets the first non-prerelease
+            if result['stable'] is None and not is_prerelease:
+                result['stable'] = release_info
+
+            # Stop once we have both
+            if result['stable'] and result['beta']:
+                break
+
+        # If no stable release, use beta
+        if result['stable'] is None and result['beta']:
+            result['stable'] = result['beta']
+
+        # Cache the result
+        _github_cache['releases'] = result
+        _github_cache['fetched_at'] = now
+
+        return result
+
+    except Exception as e:
+        current_app.logger.warning(f"Failed to fetch GitHub releases: {e}")
+        return None
+
+
+def get_channel_releases():
+    """Get release info for all channels, with fallback."""
+    releases = fetch_github_releases()
+    if releases and releases.get('stable'):
+        return releases
+    return FALLBACK_RELEASES
+
+
 def is_local_dev() -> bool:
     """Check if running in local development mode."""
     base_url = current_app.config.get('BASE_URL', 'https://join-the-culture.com')
     return 'localhost' in base_url or '127.0.0.1' in base_url
 
 
-def get_download_url(version: str) -> str:
+def get_download_url(version: str, release_info: dict = None) -> str:
     """Get download URL for a version. Uses local endpoint in dev mode."""
     if is_local_dev():
         base_url = current_app.config.get('BASE_URL', 'https://join-the-culture.com')
         return f"{base_url}/releases/dev.zip"
+
+    # Use the download_url from release_info if available (from GitHub API)
+    if release_info and 'download_url' in release_info:
+        return release_info['download_url']
+
+    # Fallback to constructed URL
     return f"https://github.com/{GITHUB_REPO}/releases/download/v{version}/culture-{version}.zip"
 
 
@@ -68,14 +179,19 @@ def version():
         download_url: GitHub releases URL for the zip (or local URL in dev mode)
         checksum: SHA256 hash of the zip file
         updated_at: ISO timestamp of when this version was released
+
+    Note: Version info is fetched dynamically from GitHub releases API
+    and cached for 5 minutes.
     """
     global _dev_zip_cache, _dev_zip_checksum
 
     channel = request.args.get('channel', 'stable')
-    if channel not in CHANNEL_RELEASES:
+    releases = get_channel_releases()
+
+    if channel not in releases:
         channel = 'stable'
 
-    release = CHANNEL_RELEASES[channel]
+    release = releases[channel]
     ver = release['version']
 
     # In local dev mode, build the zip to get accurate checksum
@@ -84,15 +200,17 @@ def version():
             _dev_zip_cache, _dev_zip_checksum = build_dev_zip()
         checksum = _dev_zip_checksum
         ver = 'dev'
+        download_url = get_download_url(ver)
     else:
-        checksum = release['checksum']
+        checksum = release.get('checksum', '')
+        download_url = get_download_url(ver, release)
 
     return jsonify({
         'version': ver,
         'channel': channel,
-        'download_url': get_download_url(ver),
+        'download_url': download_url,
         'checksum': checksum,
-        'updated_at': release['updated_at'],
+        'updated_at': release.get('updated_at', ''),
         'repository': f"https://github.com/{GITHUB_REPO}",
     })
 
@@ -104,13 +222,15 @@ def channels():
 
     Returns info about each channel for UI display or tooling.
     """
+    releases = get_channel_releases()
     result = {}
-    for channel, release in CHANNEL_RELEASES.items():
-        result[channel] = {
-            'version': release['version'],
-            'updated_at': release['updated_at'],
-            'download_url': get_download_url(release['version']),
-        }
+    for channel, release in releases.items():
+        if release:
+            result[channel] = {
+                'version': release['version'],
+                'updated_at': release.get('updated_at', ''),
+                'download_url': get_download_url(release['version'], release),
+            }
     return jsonify(result)
 
 
