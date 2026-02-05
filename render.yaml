@@ -30,7 +30,7 @@ services:
     name: culture-worker
     runtime: python
     region: oregon
-    plan: starter
+    plan: standard
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A app.tasks.celery worker --loglevel=info --concurrency=2
     envVars:
@@ -61,5 +61,5 @@ databases:
     user: culture_user
     plan: basic-1gb
     region: oregon
-    postgresMajorVersion: "16"
+    postgresMajorVersion: "18"
     ipAllowList: []  # Internal access only (Render services)
