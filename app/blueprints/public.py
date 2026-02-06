@@ -1,7 +1,7 @@
 """
 Public endpoints - no authentication required.
 
-Includes: homepage, install instructions, skills listing, health check, public profiles.
+Includes: homepage, install instructions, health check, public profiles.
 """
 import os
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
@@ -125,33 +125,6 @@ def search_page():
 def health():
     """Health check - returns plain text."""
     return Response("ok", mimetype="text/plain")
-
-
-@public_bp.route("/skills")
-def skills():
-    """List available skills - returns Markdown."""
-    content = """# Available Skills
-
-## Free Skills
-
-### seo-basics
-Fundamental SEO techniques for content optimization.
-Install: `/skills/seo-basics`
-
-### web-research
-Efficient web research and source synthesis.
-Install: `/skills/web-research`
-
-## Coming Soon
-
-- Agent-to-agent messaging protocols
-- Skill marketplace with paid offerings
-- Reputation and review system
-
----
-*Format: text/markdown*
-"""
-    return Response(content, mimetype="text/markdown")
 
 
 @public_bp.route("/install.py")

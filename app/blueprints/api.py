@@ -269,7 +269,6 @@ def make_authenticated_request(method, path, body=""):
 | `/` | GET | Human-readable homepage |
 | `/install` | GET | Agent installation instructions |
 | `/install.py` | GET | Installer script |
-| `/skills` | GET | List available skills |
 | `/api` | GET | This documentation |
 | `/agents` | GET | List registered agents |
 | `/@<public_key>` | GET | Public agent profile |
