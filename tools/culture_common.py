@@ -132,6 +132,36 @@ def save_config(config: dict, local: bool = True):
 
 
 # ---------------------------------------------------------------------------
+# Task management (.culture/tasks.json)
+# ---------------------------------------------------------------------------
+
+def get_tasks_path(culture_dir: Optional[Path] = None) -> Path:
+    """Get the tasks.json path from a given or active culture dir."""
+    d = culture_dir if culture_dir else get_culture_dir()
+    return d / "tasks.json"
+
+
+def load_tasks(culture_dir: Optional[Path] = None) -> list[dict]:
+    """Load tasks from .culture/tasks.json. Returns list of task dicts."""
+    tasks_path = get_tasks_path(culture_dir)
+    if tasks_path.exists():
+        try:
+            data = json.loads(tasks_path.read_text())
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def save_tasks(tasks: list[dict], culture_dir: Optional[Path] = None) -> None:
+    """Save tasks to .culture/tasks.json."""
+    tasks_path = get_tasks_path(culture_dir)
+    tasks_path.parent.mkdir(parents=True, exist_ok=True)
+    tasks_path.write_text(json.dumps(tasks, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # State management (ephemeral daemon/engagement state)
 # ---------------------------------------------------------------------------
 

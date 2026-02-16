@@ -3,11 +3,11 @@
 Culture Auto-Update Daemon
 
 A lightweight background process that periodically checks for Culture skill updates
-and manages engagement loops for all registered agents.
+and runs scheduled tasks for all registered agents.
 
 Multi-agent support: reads ~/.culture/agents.json to discover registered agents,
-spawns Engage.py in each alive agent's workspace directory concurrently.
-Falls back to legacy single-agent behavior when no agents.json exists.
+evaluates each agent's tasks.json for due tasks, and spawns Claude with task-specific
+prompts. Falls back to legacy single-agent behavior when no agents.json exists.
 
 Usage:
     python Daemon.py              # Run in foreground
@@ -16,7 +16,7 @@ Usage:
 """
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["requests>=2.28.0"]
+# dependencies = ["requests>=2.28.0", "croniter>=2.0.0"]
 # ///
 
 import sys
@@ -36,8 +36,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).parent))
 from culture_common import (
     get_global_culture_dir, load_agents_registry, load_global_config,
-    send_notification,
+    send_notification, load_tasks, save_tasks,
 )
+from Tasks import is_task_due, mark_task_run, find_claude_cli
 
 
 # Configuration
@@ -88,52 +89,132 @@ def get_auto_update_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Legacy single-agent engagement config (backward compat)
+# Task-based scheduling
 # ---------------------------------------------------------------------------
 
-def get_legacy_engagement_config() -> dict:
-    """Get engagement config from ~/.culture/config.json (legacy single-agent)."""
-    config = load_config()
+def auto_migrate_engagement(culture_dir: Path, config: dict, logger) -> bool:
+    """
+    Migrate legacy engagement config to tasks.json.
+    If engagement config exists but no tasks.json, create a social-engagement task.
+    Returns True if migration happened.
+    """
     engagement = config.get('engagement', {})
-    return {
-        'enabled': engagement.get('enabled', False),
-        'purpose': engagement.get('purpose', ''),
-        'working_directory': engagement.get('working_directory', ''),
-        'interval_hours': engagement.get('interval_hours', 6),
-        'last_run': engagement.get('last_run'),
-        'posts_today': engagement.get('posts_today', 0),
-        'max_posts_per_day': engagement.get('max_posts_per_day', 4),
-    }
-
-
-def should_run_legacy_engagement(engagement_config: dict, logger) -> bool:
-    """Check if it's time to run legacy engagement."""
-    if not engagement_config['enabled']:
+    if not engagement.get('enabled', False):
         return False
 
-    last_run = engagement_config.get('last_run')
-    if not last_run:
-        logger.info("Legacy engagement never run - will run now")
-        return True
+    tasks = load_tasks(culture_dir)
+    if tasks:
+        return False  # Already has tasks, no migration needed
+
+    # Build the engagement prompt (inline version of what Engage.py does)
+    purpose = engagement.get('purpose', 'general assistance')
+    agent_name = config.get('name', 'Agent')
+    prompt = (
+        f"You are {agent_name}, an AI agent registered with Culture.\n"
+        f"Your purpose: {purpose}\n\n"
+        "Execute these steps using the Culture skill tools:\n\n"
+        "1. **Check the feed** - Run Feed.py to see recent posts from other agents\n"
+        "2. **React thoughtfully** - If you see a post that resonates, react using Social.py\n"
+        "3. **Share a learning** - If you've discovered something useful, share it using Posts.py\n"
+        "4. **Check followers** - Briefly check if you have new followers\n\n"
+        "Be concise. Focus on genuine value exchange. Quality over quantity."
+    )
+
+    interval_hours = engagement.get('interval_hours', 6)
+
+    import secrets
+    task = {
+        "id": secrets.token_hex(3),
+        "name": "social-engagement",
+        "prompt": prompt,
+        "schedule": {"type": "interval", "hours": interval_hours},
+        "enabled": True,
+        "last_run": None,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    # Carry over last_run from state.json if it exists
+    state_path = culture_dir / "state.json"
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text())
+            if state.get('last_run'):
+                task['last_run'] = state['last_run']
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    save_tasks([task], culture_dir)
+    logger.info(f"Migrated engagement config to tasks.json (interval: {interval_hours}h)")
+    return True
+
+
+def get_due_tasks(culture_dir: Path, logger) -> list[dict]:
+    """Load tasks.json from a culture dir and return list of due tasks."""
+    tasks = load_tasks(culture_dir)
+    due = []
+    for task in tasks:
+        if is_task_due(task):
+            due.append(task)
+    return due
+
+
+def _run_claude_with_prompt(prompt: str, cwd: str, logger, timeout: int = 600) -> bool:
+    """Spawn Claude CLI with a prompt. Returns True on success."""
+    import subprocess
+
+    claude_path = find_claude_cli()
+    if not claude_path:
+        logger.error("Claude CLI not found")
+        return False
 
     try:
-        last_run_dt = datetime.fromisoformat(last_run)
-        hours_since = (datetime.now() - last_run_dt).total_seconds() / 3600
-        interval = engagement_config.get('interval_hours', 6)
+        logger.info(f"Running Claude (cwd={cwd})")
 
-        if hours_since >= interval:
-            logger.info(f"Legacy engagement due ({hours_since:.1f}h since last run)")
+        result = subprocess.run(
+            [claude_path, '--print', prompt],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        if result.returncode == 0:
+            logger.info("Task completed successfully")
+            if result.stdout:
+                lines = result.stdout.strip().split('\n')[:5]
+                for line in lines:
+                    logger.info(f"  {line}")
             return True
         else:
-            logger.debug(f"Legacy engagement not due ({hours_since:.1f}h / {interval}h)")
+            logger.warning(f"Task failed with code {result.returncode}")
+            if result.stderr:
+                logger.warning(f"  stderr: {result.stderr[:200]}")
             return False
-    except (ValueError, TypeError):
-        return True
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Task timed out after {timeout}s")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to run task: {e}")
+        return False
 
 
-def run_legacy_engagement(logger) -> bool:
-    """Run engagement in legacy single-agent mode."""
-    return _run_engage_subprocess(None, logger)
+def run_task_for_agent(task: dict, culture_dir: Path, agent_dir: str, logger) -> bool:
+    """Run a single task for an agent and update its state."""
+    task_name = task.get('name', task.get('id', '?'))
+    logger.info(f"Running task '{task_name}'")
+
+    success = _run_claude_with_prompt(task.get('prompt', ''), agent_dir, logger)
+
+    # Update task state regardless of success (to avoid re-triggering failures)
+    tasks = load_tasks(culture_dir)
+    for t in tasks:
+        if t.get('id') == task.get('id'):
+            mark_task_run(t)
+            break
+    save_tasks(tasks, culture_dir)
+
+    return success
 
 
 # ---------------------------------------------------------------------------
@@ -178,103 +259,12 @@ def get_alive_agents(logger) -> list[dict]:
         agents.append({
             'name': name,
             'directory': str(directory),
+            'culture_dir': culture_dir,
             'config': agent_config,
             'registered_at': info.get('registered_at', ''),
         })
 
     return agents
-
-
-def should_run_agent_engagement(agent: dict, logger) -> bool:
-    """Check if an agent's engagement is due based on its local state."""
-    engagement = agent['config'].get('engagement', {})
-    if not engagement.get('enabled', False):
-        return False
-
-    # Read agent's local state.json
-    state_path = Path(agent['directory']) / ".culture" / "state.json"
-    state = {}
-    if state_path.exists():
-        try:
-            state = json.loads(state_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    last_run = state.get('last_run')
-    if not last_run:
-        logger.info(f"Agent '{agent['name']}' engagement never run - will run now")
-        return True
-
-    try:
-        last_run_dt = datetime.fromisoformat(last_run)
-        hours_since = (datetime.now() - last_run_dt).total_seconds() / 3600
-        interval = engagement.get('interval_hours', 6)
-
-        if hours_since >= interval:
-            logger.info(f"Agent '{agent['name']}' engagement due ({hours_since:.1f}h since last run)")
-            return True
-        else:
-            logger.debug(f"Agent '{agent['name']}' not due ({hours_since:.1f}h / {interval}h)")
-            return False
-    except (ValueError, TypeError):
-        return True
-
-
-def run_engagement_for_agent(agent: dict, logger) -> bool:
-    """Spawn Engage.py via subprocess with cwd set to agent's directory."""
-    logger.info(f"Running engagement for agent '{agent['name']}' in {agent['directory']}")
-    return _run_engage_subprocess(agent['directory'], logger)
-
-
-def _run_engage_subprocess(cwd: str | None, logger) -> bool:
-    """Run Engage.py as a subprocess. If cwd is None, uses current directory."""
-    import subprocess
-    import shutil
-
-    script_dir = Path(__file__).parent
-    engage_script = script_dir / "Engage.py"
-
-    if not engage_script.exists():
-        logger.error(f"Engage.py not found at {engage_script}")
-        return False
-
-    uv_path = shutil.which('uv')
-
-    try:
-        if uv_path:
-            cmd = [uv_path, 'run', str(engage_script)]
-        else:
-            cmd = [sys.executable, str(engage_script)]
-
-        logger.info(f"Running: {' '.join(cmd)} (cwd={cwd or 'current'})")
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 minute timeout
-            cwd=cwd,
-        )
-
-        if result.returncode == 0:
-            logger.info("Engagement completed successfully")
-            if result.stdout:
-                lines = result.stdout.strip().split('\n')[:5]
-                for line in lines:
-                    logger.info(f"  {line}")
-            return True
-        else:
-            logger.warning(f"Engagement failed with code {result.returncode}")
-            if result.stderr:
-                logger.warning(f"  stderr: {result.stderr[:200]}")
-            return False
-
-    except subprocess.TimeoutExpired:
-        logger.error("Engagement timed out after 10 minutes")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to run engagement: {e}")
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -559,13 +549,7 @@ def run_daemon(endpoint: str, interval: int):
             status = "alive" if info.get('alive', True) else "disabled"
             logger.info(f"  {name}: {info.get('directory', '?')} ({status})")
     else:
-        # Legacy single-agent mode
-        engagement_config = get_legacy_engagement_config()
-        if engagement_config['enabled']:
-            logger.info(f"Legacy mode - Engagement: ENABLED (every {engagement_config['interval_hours']}h)")
-            logger.info(f"  Purpose: {engagement_config.get('purpose', 'not set')[:50]}")
-        else:
-            logger.info("Legacy mode - Engagement: DISABLED")
+        logger.info("Legacy single-agent mode")
 
     # Handle shutdown signals
     running = True
@@ -606,39 +590,58 @@ def run_daemon(endpoint: str, interval: int):
                 logger.debug("Auto-update disabled, skipping check")
                 state['last_check'] = datetime.now().isoformat()
 
-            # --- Engagement ---
+            # --- Task scheduling ---
             registry = load_agents_registry()
 
             if registry:
-                # Multi-agent mode: run engagement for all alive agents
+                # Multi-agent mode: evaluate tasks for all alive agents
                 agents = get_alive_agents(logger)
-                agents_to_run = [a for a in agents if should_run_agent_engagement(a, logger)]
 
-                if agents_to_run:
-                    logger.info(f"Running engagement for {len(agents_to_run)} agent(s)")
+                # Collect all (agent, task) pairs that are due
+                agent_tasks = []
+                for agent in agents:
+                    culture_dir = agent['culture_dir']
+
+                    # Auto-migrate engagement config to tasks.json if needed
+                    auto_migrate_engagement(culture_dir, agent['config'], logger)
+
+                    due_tasks = get_due_tasks(culture_dir, logger)
+                    for task in due_tasks:
+                        agent_tasks.append((agent, task))
+
+                if agent_tasks:
+                    logger.info(f"Running {len(agent_tasks)} due task(s) across {len(set(a['name'] for a, _ in agent_tasks))} agent(s)")
                     with ThreadPoolExecutor(max_workers=MAX_AGENT_WORKERS) as executor:
                         futures = {
-                            executor.submit(run_engagement_for_agent, agent, logger): agent
-                            for agent in agents_to_run
+                            executor.submit(
+                                run_task_for_agent, task, agent['culture_dir'], agent['directory'], logger
+                            ): (agent, task)
+                            for agent, task in agent_tasks
                         }
                         for future in as_completed(futures):
-                            agent = futures[future]
+                            agent, task = futures[future]
+                            task_name = task.get('name', task.get('id', '?'))
                             try:
                                 success = future.result()
                                 if success:
-                                    logger.info(f"Agent '{agent['name']}' engagement completed")
+                                    logger.info(f"Agent '{agent['name']}' task '{task_name}' completed")
                                 else:
-                                    logger.warning(f"Agent '{agent['name']}' engagement failed")
+                                    logger.warning(f"Agent '{agent['name']}' task '{task_name}' failed")
                             except Exception as e:
-                                logger.error(f"Agent '{agent['name']}' engagement error: {e}")
+                                logger.error(f"Agent '{agent['name']}' task '{task_name}' error: {e}")
                 else:
-                    logger.debug("No agents due for engagement")
+                    logger.debug("No tasks due")
             else:
-                # Legacy single-agent mode
-                engagement_config = get_legacy_engagement_config()
-                if engagement_config['enabled'] and should_run_legacy_engagement(engagement_config, logger):
-                    logger.info("Running legacy engagement loop...")
-                    run_legacy_engagement(logger)
+                # Legacy single-agent mode: check tasks in global .culture/
+                global_culture_dir = get_global_culture_dir()
+                global_config = load_global_config()
+                auto_migrate_engagement(global_culture_dir, global_config, logger)
+
+                due_tasks = get_due_tasks(global_culture_dir, logger)
+                for task in due_tasks:
+                    task_name = task.get('name', task.get('id', '?'))
+                    logger.info(f"Running legacy task '{task_name}'...")
+                    run_task_for_agent(task, global_culture_dir, str(Path.cwd()), logger)
 
             save_daemon_state(state)
 

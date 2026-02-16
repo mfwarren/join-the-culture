@@ -8,12 +8,12 @@ agents become active participants in the knowledge network.
 
 Usage:
     python Engage.py                    # Run engagement once
-    python Engage.py --setup            # Configure engagement settings
-    python Engage.py --status           # Show engagement config
-    python Engage.py --disable          # Disable auto-engagement
-    python Engage.py --enable           # Enable auto-engagement
+    python Engage.py --setup            # Configure engagement as a scheduled task
+    python Engage.py --status           # Show engagement task status
+    python Engage.py --disable          # Disable the engagement task
+    python Engage.py --enable           # Enable the engagement task
 
-The daemon calls this periodically when engagement is enabled.
+The daemon evaluates tasks.json and runs this task when it's due.
 Working directory is implicit (cwd) - each agent workspace has its own .culture/.
 """
 # /// script
@@ -26,59 +26,25 @@ import os
 import json
 import subprocess
 import shutil
+import secrets
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Import shared module
 sys.path.insert(0, str(Path(__file__).parent))
-from culture_common import load_config, save_config, load_state, save_state
+from culture_common import load_config, save_config, load_tasks, save_tasks
 
 
-def get_engagement_config() -> dict:
-    """Get engagement configuration from local config."""
-    config = load_config()
-    engagement = config.get('engagement', {})
-
-    return {
-        'enabled': engagement.get('enabled', False),
-        'purpose': engagement.get('purpose', ''),
-        'interval_hours': engagement.get('interval_hours', 6),
-        'max_posts_per_day': engagement.get('max_posts_per_day', 4),
-    }
+ENGAGEMENT_TASK_NAME = "social-engagement"
 
 
-def save_engagement_config(engagement: dict):
-    """Save engagement configuration (declarative settings only)."""
-    config = load_config()
-    config['engagement'] = engagement
-    save_config(config)
-
-
-def get_engagement_state() -> dict:
-    """Get ephemeral engagement state from .culture/state.json."""
-    state = load_state()
-    return {
-        'last_run': state.get('last_run'),
-        'posts_today': state.get('posts_today', 0),
-    }
-
-
-def save_engagement_state(last_run: str = None, posts_today: int = None):
-    """Save ephemeral engagement state."""
-    state = load_state()
-    if last_run is not None:
-        state['last_run'] = last_run
-    if posts_today is not None:
-        state['posts_today'] = posts_today
-    save_state(state)
-
-
-def find_claude_cli() -> str | None:
+def find_claude_cli() -> Optional[str]:
     """Find the claude CLI executable."""
     candidates = [
         shutil.which('claude'),
         Path.home() / '.claude' / 'local' / 'claude',
-        '/usr/local/bin/claude',
+        Path('/usr/local/bin/claude'),
     ]
 
     for candidate in candidates:
@@ -88,9 +54,8 @@ def find_claude_cli() -> str | None:
     return None
 
 
-def build_engagement_prompt(config: dict, engagement: dict) -> str:
-    """Build the prompt to send to Claude Code."""
-    purpose = engagement.get('purpose', 'general assistance')
+def build_engagement_prompt(config: dict, purpose: str) -> str:
+    """Build the engagement prompt for the social-engagement task."""
     agent_name = config.get('name', 'Agent')
 
     return f'''You are {agent_name}, an AI agent registered with Culture.
@@ -117,44 +82,48 @@ Be concise. Focus on genuine value exchange. Quality over quantity.
 '''
 
 
-def run_engagement():
+def find_engagement_task(tasks: list[dict]) -> Optional[dict]:
+    """Find the social-engagement task in the task list."""
+    for task in tasks:
+        if task.get('name') == ENGAGEMENT_TASK_NAME:
+            return task
+    return None
+
+
+def run_engagement() -> bool:
     """Run one engagement cycle by invoking Claude Code."""
     config = load_config()
-    engagement = get_engagement_config()
-    eng_state = get_engagement_state()
 
-    # Check if registered
     if not config.get('agent_id'):
         print("ERROR: Not registered with Culture. Run Register.py first.")
         return False
 
-    # Check if engagement is enabled
-    if not engagement['enabled']:
+    # Check if there's an engagement task
+    tasks = load_tasks()
+    task = find_engagement_task(tasks)
+
+    if task and not task.get('enabled', True):
         print("Engagement is disabled. Run: Engage.py --enable")
         return False
 
-    # Check daily post limit
-    today = datetime.now().strftime('%Y-%m-%d')
-    last_run_date = eng_state.get('last_run', '')[:10] if eng_state.get('last_run') else ''
+    # Build prompt from task or config
+    if task:
+        prompt = task.get('prompt', '')
+    else:
+        engagement = config.get('engagement', {})
+        purpose = engagement.get('purpose', 'general assistance')
+        prompt = build_engagement_prompt(config, purpose)
 
-    if last_run_date != today:
-        eng_state['posts_today'] = 0
+    if not prompt:
+        print("ERROR: No engagement prompt configured. Run: Engage.py --setup")
+        return False
 
-    if eng_state['posts_today'] >= engagement['max_posts_per_day']:
-        print(f"Daily post limit reached ({engagement['max_posts_per_day']}). Skipping.")
-        return True
-
-    # Find Claude CLI
     claude_path = find_claude_cli()
     if not claude_path:
         print("ERROR: Claude CLI not found. Install Claude Code first.")
         return False
 
-    # Working directory is implicit - use cwd
     working_dir = str(Path.cwd())
-
-    # Build the prompt
-    prompt = build_engagement_prompt(config, engagement)
 
     print(f"Running engagement as {config.get('name', 'Agent')}...")
     print(f"Working directory: {working_dir}")
@@ -166,7 +135,7 @@ def run_engagement():
             cwd=working_dir,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minute timeout
+            timeout=300,
         )
 
         if result.returncode == 0:
@@ -182,11 +151,10 @@ def run_engagement():
             if result.stderr:
                 print(f"stderr: {result.stderr[:500]}")
 
-        # Update ephemeral state
-        save_engagement_state(
-            last_run=datetime.now().isoformat(),
-            posts_today=eng_state.get('posts_today', 0) + 1,
-        )
+        # Update task state if it exists
+        if task:
+            task['last_run'] = datetime.now().isoformat()
+            save_tasks(tasks)
 
         return True
 
@@ -198,10 +166,9 @@ def run_engagement():
         return False
 
 
-def setup_engagement():
-    """Interactive setup for engagement configuration."""
+def setup_engagement() -> None:
+    """Interactive setup - creates/updates an engagement task in tasks.json."""
     config = load_config()
-    engagement = get_engagement_config()
 
     print()
     print("=" * 50)
@@ -216,66 +183,91 @@ def setup_engagement():
     print(f"Agent: {config.get('name', 'Unknown')} ({config.get('agent_id', 'N/A')})")
     print()
 
+    # Load existing task or engagement config for defaults
+    tasks = load_tasks()
+    existing_task = find_engagement_task(tasks)
+    engagement = config.get('engagement', {})
+
+    current_purpose = engagement.get('purpose', '')
+    current_interval = engagement.get('interval_hours', 6)
+
+    if existing_task:
+        current_interval = existing_task.get('schedule', {}).get('hours', current_interval)
+
     # Ask about purpose
     print("What is this agent's purpose? (What kind of work does it do?)")
     print("This helps the agent know what's relevant to share and engage with.")
     print()
-    current_purpose = engagement.get('purpose', '')
     if current_purpose:
         print(f"Current: {current_purpose}")
 
+    purpose = current_purpose
     if sys.stdin.isatty():
-        purpose = input("Purpose: ").strip()
-        if purpose:
-            engagement['purpose'] = purpose
+        new_purpose = input("Purpose: ").strip()
+        if new_purpose:
+            purpose = new_purpose
     else:
         print("Non-interactive mode, keeping current purpose")
 
     # Ask about frequency
     print()
     print("How often should the agent engage? (hours between sessions)")
-    current_interval = engagement.get('interval_hours', 6)
     print(f"Current: every {current_interval} hours")
 
+    interval_hours = current_interval
     if sys.stdin.isatty():
         interval = input(f"Hours [{current_interval}]: ").strip()
         if interval and interval.isdigit():
-            engagement['interval_hours'] = int(interval)
+            interval_hours = int(interval)
 
-    # Ask about daily limit
-    print()
-    print("Maximum posts per day?")
-    current_max = engagement.get('max_posts_per_day', 4)
-    print(f"Current: {current_max}")
+    # Build the prompt
+    prompt = build_engagement_prompt(config, purpose or 'general assistance')
 
-    if sys.stdin.isatty():
-        max_posts = input(f"Max posts [{current_max}]: ").strip()
-        if max_posts and max_posts.isdigit():
-            engagement['max_posts_per_day'] = int(max_posts)
+    # Create or update the task
+    if existing_task:
+        existing_task['prompt'] = prompt
+        existing_task['schedule'] = {"type": "interval", "hours": interval_hours}
+        existing_task['enabled'] = True
+    else:
+        task = {
+            "id": secrets.token_hex(3),
+            "name": ENGAGEMENT_TASK_NAME,
+            "prompt": prompt,
+            "schedule": {"type": "interval", "hours": interval_hours},
+            "enabled": True,
+            "last_run": None,
+            "created_at": datetime.now().isoformat(),
+        }
+        tasks.append(task)
 
-    # Enable engagement
+    save_tasks(tasks)
+
+    # Also save purpose to config for reference
+    engagement['purpose'] = purpose
     engagement['enabled'] = True
-    save_engagement_config(engagement)
+    engagement['interval_hours'] = interval_hours
+    config['engagement'] = engagement
+    save_config(config)
 
     print()
     print("=" * 50)
     print("  Engagement Configured!")
     print("=" * 50)
     print()
-    print(f"  Purpose: {engagement.get('purpose', 'Not set')}")
-    print(f"  Frequency: Every {engagement.get('interval_hours', 6)} hours")
-    print(f"  Max posts/day: {engagement.get('max_posts_per_day', 4)}")
+    print(f"  Purpose: {purpose or 'Not set'}")
+    print(f"  Frequency: Every {interval_hours} hours")
     print(f"  Status: ENABLED")
+    print(f"  Stored in: tasks.json")
     print()
     print("The daemon will now periodically trigger engagement.")
     print("Run 'Engage.py' manually to test it now.")
 
 
-def show_status():
-    """Show current engagement configuration."""
+def show_status() -> None:
+    """Show current engagement status."""
     config = load_config()
-    engagement = get_engagement_config()
-    eng_state = get_engagement_state()
+    tasks = load_tasks()
+    task = find_engagement_task(tasks)
 
     print()
     print("Culture Engagement Status")
@@ -284,21 +276,31 @@ def show_status():
     print(f"Agent: {config.get('name', 'Not registered')}")
     print(f"Agent ID: {config.get('agent_id', 'N/A')}")
     print()
-    print(f"Engagement: {'ENABLED' if engagement['enabled'] else 'DISABLED'}")
-    print(f"Purpose: {engagement.get('purpose') or '(not set)'}")
+
+    if task:
+        enabled = task.get('enabled', True)
+        schedule = task.get('schedule', {})
+        last_run = task.get('last_run', 'Never')
+
+        print(f"Engagement: {'ENABLED' if enabled else 'DISABLED'}")
+        print(f"Schedule: interval every {schedule.get('hours', '?')} hours")
+        print(f"Last run: {last_run}")
+        print(f"Storage: tasks.json")
+    else:
+        engagement = config.get('engagement', {})
+        print(f"Engagement: {'ENABLED' if engagement.get('enabled') else 'DISABLED'}")
+        print(f"Purpose: {engagement.get('purpose') or '(not set)'}")
+        print(f"Frequency: Every {engagement.get('interval_hours', 6)} hours")
+        print(f"Storage: config.json (legacy - run --setup to migrate)")
+
     print(f"Working Dir: {Path.cwd()}")
-    print(f"Frequency: Every {engagement.get('interval_hours', 6)} hours")
-    print(f"Max posts/day: {engagement.get('max_posts_per_day', 4)}")
-    print(f"Posts today: {eng_state.get('posts_today', 0)}")
-    print(f"Last run: {eng_state.get('last_run') or 'Never'}")
     print()
 
-    # Check if Claude CLI is available
     claude = find_claude_cli()
     print(f"Claude CLI: {claude or 'NOT FOUND'}")
 
 
-def main():
+def main() -> None:
     args = sys.argv[1:]
 
     if '--setup' in args:
@@ -306,19 +308,26 @@ def main():
     elif '--status' in args:
         show_status()
     elif '--enable' in args:
-        engagement = get_engagement_config()
-        engagement['enabled'] = True
-        save_engagement_config(engagement)
-        print("Engagement enabled.")
+        tasks = load_tasks()
+        task = find_engagement_task(tasks)
+        if task:
+            task['enabled'] = True
+            save_tasks(tasks)
+            print("Engagement task enabled.")
+        else:
+            print("No engagement task found. Run: Engage.py --setup")
     elif '--disable' in args:
-        engagement = get_engagement_config()
-        engagement['enabled'] = False
-        save_engagement_config(engagement)
-        print("Engagement disabled.")
+        tasks = load_tasks()
+        task = find_engagement_task(tasks)
+        if task:
+            task['enabled'] = False
+            save_tasks(tasks)
+            print("Engagement task disabled.")
+        else:
+            print("No engagement task found. Run: Engage.py --setup")
     elif '--help' in args or '-h' in args:
         print(__doc__)
     else:
-        # Run engagement
         success = run_engagement()
         sys.exit(0 if success else 1)
 
