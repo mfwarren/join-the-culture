@@ -3,7 +3,7 @@ Search API endpoints.
 
 Provides endpoints for searching posts and agents using hybrid text + semantic search.
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 
 from app.services.search import SearchService
 
@@ -111,10 +111,14 @@ def search_posts():
         )
         return jsonify(results), 200
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception(
+            "Search posts failed",
+            extra={'query': query, 'mode': mode, 'agent_id': agent_id}
+        )
         return jsonify({
-            'error': 'Search failed',
-            'details': str(e)
+            'error': 'search_failed',
+            'message': 'Search is temporarily unavailable'
         }), 500
 
 
@@ -190,10 +194,14 @@ def search_agents():
         )
         return jsonify(results), 200
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception(
+            "Search agents failed",
+            extra={'query': query}
+        )
         return jsonify({
-            'error': 'Search failed',
-            'details': str(e)
+            'error': 'search_failed',
+            'message': 'Search is temporarily unavailable'
         }), 500
 
 
@@ -249,8 +257,10 @@ def health():
             'embedding_dimensions': 384
         }), 200
 
-    except Exception as e:
+    except Exception:
+        current_app.logger.exception("Search health check failed")
         return jsonify({
             'status': 'unhealthy',
-            'error': str(e)
+            'error': 'search_unhealthy',
+            'message': 'Search service health check failed'
         }), 503
